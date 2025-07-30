@@ -1,0 +1,232 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # Run integration tests daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: 'Type of integration tests to run'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - e2e
+          - performance
+          - load
+          - real
+      skip_api_tests:
+        description: 'Skip tests that require API keys'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  integration-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x]
+      fail-fast: false
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Setup test environment
+      run: |
+        mkdir -p test-results
+        mkdir -p coverage/integration
+
+    - name: Run integration tests (without API keys)
+      if: ${{ !secrets.QLOO_API_KEY || !secrets.GEMINI_API_KEY || github.event.inputs.skip_api_tests == 'true' }}
+      run: |
+        npm run test:integration:runner -- ${{ github.event.inputs.test_type || 'all' }} --skip-api
+      env:
+        NODE_ENV: test
+
+    - name: Run integration tests (with API keys)
+      if: ${{ secrets.QLOO_API_KEY && secrets.GEMINI_API_KEY && github.event.inputs.skip_api_tests != 'true' }}
+      run: |
+        npm run test:integration:runner -- ${{ github.event.inputs.test_type || 'all' }}
+      env:
+        NODE_ENV: test
+        QLOO_API_KEY: ${{ secrets.QLOO_API_KEY }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        GEMINI_MODEL: gemini-1.5-flash
+
+    - name: Upload test results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: integration-test-results-node-${{ matrix.node-version }}
+        path: |
+          test-results/
+          coverage/integration/
+        retention-days: 30
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v4
+      if: always()
+      with:
+        directory: ./coverage/integration
+        flags: integration
+        name: integration-tests-node-${{ matrix.node-version }}
+
+  performance-benchmarks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.event_name == 'schedule' || github.event.inputs.test_type == 'performance' || github.event.inputs.test_type == 'all'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20.x'
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Run performance benchmarks
+      run: npm run test:integration:performance
+      env:
+        NODE_ENV: test
+
+    - name: Upload performance results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: performance-benchmarks
+        path: test-results/
+        retention-days: 90
+
+  load-testing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    if: github.event_name == 'schedule' || github.event.inputs.test_type == 'load' || github.event.inputs.test_type == 'all'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20.x'
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Run load tests
+      run: npm run test:integration:load
+      env:
+        NODE_ENV: test
+
+    - name: Upload load test results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: load-test-results
+        path: test-results/
+        retention-days: 30
+
+  real-api-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: ${{ secrets.QLOO_API_KEY && secrets.GEMINI_API_KEY && (github.event_name == 'schedule' || github.event.inputs.test_type == 'real') }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20.x'
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Run real API integration tests
+      run: npm run test:integration:real
+      env:
+        NODE_ENV: test
+        QLOO_API_KEY: ${{ secrets.QLOO_API_KEY }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        GEMINI_MODEL: gemini-1.5-flash
+
+    - name: Upload real API test results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: real-api-test-results
+        path: test-results/
+        retention-days: 30
+
+  test-summary:
+    runs-on: ubuntu-latest
+    needs: [integration-tests, performance-benchmarks, load-testing, real-api-tests]
+    if: always()
+
+    steps:
+    - name: Download all test results
+      uses: actions/download-artifact@v4
+      with:
+        path: all-test-results
+
+    - name: Generate test summary
+      run: |
+        echo "# Integration Test Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## Test Results" >> $GITHUB_STEP_SUMMARY
+        
+        if [ -d "all-test-results" ]; then
+          for dir in all-test-results/*/; do
+            if [ -d "$dir" ]; then
+              echo "### $(basename "$dir")" >> $GITHUB_STEP_SUMMARY
+              if [ -f "$dir/integration-test-report.json" ]; then
+                echo "```json" >> $GITHUB_STEP_SUMMARY
+                cat "$dir/integration-test-report.json" >> $GITHUB_STEP_SUMMARY
+                echo "```" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "No test report found" >> $GITHUB_STEP_SUMMARY
+              fi
+              echo "" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+        else
+          echo "No test results found" >> $GITHUB_STEP_SUMMARY
+        fi
+
+    - name: Check test status
+      run: |
+        # Check if any critical tests failed
+        if [ "${{ needs.integration-tests.result }}" == "failure" ]; then
+          echo "❌ Integration tests failed"
+          exit 1
+        fi
+        
+        echo "✅ All critical tests passed or were skipped"

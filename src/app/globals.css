@@ -1,0 +1,213 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+  --font-geist-sans: ui-sans-serif, system-ui, sans-serif;
+  --font-geist-mono: ui-monospace, SFMono-Regular, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+}
+
+/* Custom animations for enhanced UX */
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+@keyframes pulse-subtle {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200px 0;
+  }
+  100% {
+    background-position: calc(200px + 100%) 0;
+  }
+}
+
+@keyframes gradient-shift {
+  0%, 100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+/* Glassmorphism effects */
+.glassmorphism {
+  background: rgba(255, 255, 255, 0.25);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.glassmorphism-dark {
+  background: rgba(0, 0, 0, 0.25);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+/* Enhanced focus states */
+.focus-enhanced {
+  transition: all 0.2s ease;
+}
+
+.focus-enhanced:focus {
+  outline: 2px solid #8b5cf6;
+  outline-offset: 2px;
+  border-color: #8b5cf6;
+}
+
+/* Smooth scroll behavior */
+html {
+  scroll-behavior: smooth;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(45deg, #8b5cf6, #3b82f6);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(45deg, #7c3aed, #2563eb);
+}
+
+/* Loading skeleton animation */
+.loading-skeleton {
+  background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+  background-size: 200px 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+/* Gradient text animation */
+.gradient-text-animated {
+  background: linear-gradient(-45deg, #8b5cf6, #3b82f6, #06b6d4, #10b981);
+  background-size: 400% 400%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: gradient-shift 4s ease infinite;
+}
+
+/* Hover effects for cards */
+.card-hover {
+  transition: all 0.3s ease;
+}
+
+.card-hover:hover {
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  transform: scale(1.02) translateY(-4px);
+}
+
+/* Button effects */
+.button-glow {
+  position: relative;
+  overflow: hidden;
+}
+
+.button-glow::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+  transition: left 0.5s;
+}
+
+.button-glow:hover::before {
+  left: 100%;
+}
+
+/* Floating animation for background elements */
+.float-animation {
+  animation: float 6s ease-in-out infinite;
+}
+
+.float-delay-1 {
+  animation-delay: 1s;
+}
+
+.float-delay-2 {
+  animation-delay: 2s;
+}
+
+/* Selection styling */
+::selection {
+  background: #8b5cf6;
+  color: white;
+}
+
+/* Enhanced input styling */
+input[type="text"], 
+input[type="number"], 
+textarea, 
+select {
+  transition: all 0.2s ease;
+}
+
+input[type="text"]:focus, 
+input[type="number"]:focus, 
+textarea:focus, 
+select:focus {
+  outline: 2px solid #8b5cf6;
+  outline-offset: 2px;
+  border-color: #8b5cf6;
+}
+
+/* Ensure proper text rendering */
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Accessibility improvements */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+  .glassmorphism {
+    background: rgba(255, 255, 255, 0.9);
+    border: 2px solid #000;
+  }
+}

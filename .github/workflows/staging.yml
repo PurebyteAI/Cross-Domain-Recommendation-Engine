@@ -1,0 +1,255 @@
+name: Deploy to Staging
+
+on:
+  push:
+    branches: [develop, staging]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '20.x'
+  VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+  VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+jobs:
+  # Run comprehensive tests
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x]
+      fail-fast: false
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Run linting
+      run: npm run lint
+
+    - name: Run unit tests
+      run: npm run test:run
+
+    - name: Run integration tests
+      run: npm run test:integration
+      env:
+        NODE_ENV: test
+
+    - name: Upload test results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: test-results-node-${{ matrix.node-version }}
+        path: |
+          coverage/
+          test-results/
+        retention-days: 7
+
+  # Deploy to staging
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: [test]
+    if: needs.test.result == 'success'
+    timeout-minutes: 10
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+
+    - name: Install Vercel CLI
+      run: npm install -g vercel@latest
+
+    - name: Pull Vercel Environment Information
+      run: vercel pull --yes --environment=preview --token=${{ secrets.VERCEL_TOKEN }}
+
+    - name: Build Project Artifacts
+      run: vercel build --token=${{ secrets.VERCEL_TOKEN }}
+
+    - name: Deploy Project Artifacts to Vercel (Preview)
+      id: deploy
+      run: |
+        DEPLOYMENT_URL=$(vercel deploy --prebuilt --token=${{ secrets.VERCEL_TOKEN }})
+        echo "deployment_url=$DEPLOYMENT_URL" >> $GITHUB_OUTPUT
+        echo "Deployed to: $DEPLOYMENT_URL"
+
+    - name: Comment PR with deployment URL
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const deploymentUrl = '${{ steps.deploy.outputs.deployment_url }}';
+          const comment = `
+          ## 🚀 Staging Deployment Ready!
+          
+          Your changes have been deployed to staging:
+          **[View Deployment](${deploymentUrl})**
+          
+          ### Quick Links:
+          - 📖 [API Documentation](${deploymentUrl}/api/docs)
+          - 🏥 [Health Check](${deploymentUrl}/api/health)
+          - 📊 [Admin Dashboard](${deploymentUrl}/dashboard)
+          
+          ### Test the deployment:
+          \`\`\`bash
+          curl "${deploymentUrl}/api/health"
+          \`\`\`
+          
+          This deployment will be automatically cleaned up when the PR is closed.
+          `;
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });
+
+  # Staging health checks
+  staging-health-check:
+    runs-on: ubuntu-latest
+    needs: [deploy-staging]
+    if: needs.deploy-staging.result == 'success'
+    timeout-minutes: 5
+
+    steps:
+    - name: Wait for deployment to be ready
+      run: sleep 20
+
+    - name: Health check
+      run: |
+        HEALTH_URL="${{ needs.deploy-staging.outputs.deployment_url }}/api/health"
+        echo "Checking health at: $HEALTH_URL"
+        
+        for i in {1..3}; do
+          if curl -f -s "$HEALTH_URL" > /dev/null; then
+            echo "✅ Staging health check passed"
+            exit 0
+          fi
+          echo "⏳ Attempt $i failed, retrying in 5 seconds..."
+          sleep 5
+        done
+        
+        echo "❌ Staging health check failed"
+        exit 1
+
+    - name: API smoke test
+      run: |
+        API_URL="${{ needs.deploy-staging.outputs.deployment_url }}/api/docs/openapi"
+        echo "Testing API at: $API_URL"
+        
+        if curl -f -s "$API_URL" > /dev/null; then
+          echo "✅ API smoke test passed"
+        else
+          echo "❌ API smoke test failed"
+          exit 1
+        fi
+
+  # Performance testing on staging
+  performance-test:
+    runs-on: ubuntu-latest
+    needs: [deploy-staging, staging-health-check]
+    if: needs.staging-health-check.result == 'success'
+    timeout-minutes: 10
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Run performance tests against staging
+      run: npm run test:integration:performance
+      env:
+        NODE_ENV: test
+        TEST_BASE_URL: ${{ needs.deploy-staging.outputs.deployment_url }}
+
+    - name: Upload performance results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: performance-results
+        path: test-results/
+        retention-days: 30
+
+  # Security scan
+  security-scan:
+    runs-on: ubuntu-latest
+    needs: [deploy-staging]
+    if: needs.deploy-staging.result == 'success'
+    timeout-minutes: 5
+
+    steps:
+    - name: Security headers check
+      run: |
+        URL="${{ needs.deploy-staging.outputs.deployment_url }}"
+        echo "Checking security headers for: $URL"
+        
+        # Check for security headers
+        HEADERS=$(curl -I -s "$URL")
+        
+        if echo "$HEADERS" | grep -i "strict-transport-security"; then
+          echo "✅ HSTS header found"
+        else
+          echo "⚠️  HSTS header missing"
+        fi
+        
+        if echo "$HEADERS" | grep -i "x-content-type-options"; then
+          echo "✅ X-Content-Type-Options header found"
+        else
+          echo "⚠️  X-Content-Type-Options header missing"
+        fi
+        
+        if echo "$HEADERS" | grep -i "x-frame-options"; then
+          echo "✅ X-Frame-Options header found"
+        else
+          echo "⚠️  X-Frame-Options header missing"
+        fi
+
+  # Cleanup on PR close
+  cleanup:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    
+    steps:
+    - name: Comment PR cleanup
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const comment = `
+          ## 🧹 Staging Deployment Cleaned Up
+          
+          The staging deployment for this PR has been automatically cleaned up.
+          `;
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });
