@@ -4,7 +4,13 @@ import { QlooService, QlooServiceError, QlooServiceConfig, createQlooService } f
 import { QlooEntity, QlooInsights, QlooRecommendation, QlooTag } from '@/types'
 
 // Mock axios
-vi.mock('axios')
+vi.mock('axios', () => ({
+  default: {
+    create: vi.fn(),
+    isAxiosError: vi.fn()
+  }
+}))
+
 const mockedAxios = vi.mocked(axios)
 
 describe('QlooService', () => {
@@ -79,8 +85,9 @@ describe('QlooService', () => {
       }
     }
 
-    mockedAxios.create.mockReturnValue(mockAxiosInstance)
-    mockedAxios.isAxiosError.mockImplementation((error: any) => {
+    // Setup axios mocks
+    vi.mocked(mockedAxios.create).mockReturnValue(mockAxiosInstance)
+    vi.mocked(mockedAxios.isAxiosError).mockImplementation((error: any) => {
       return error && error.isAxiosError === true
     })
 
@@ -93,14 +100,14 @@ describe('QlooService', () => {
 
   describe('constructor', () => {
     it('should create axios instance with correct configuration', () => {
-      expect(mockedAxios.create).toHaveBeenCalledWith({
+      expect(vi.mocked(mockedAxios.create)).toHaveBeenCalledWith({
         baseURL: mockConfig.apiUrl,
         headers: {
-          'Authorization': `Bearer ${mockConfig.apiKey}`,
+          'X-API-Key': mockConfig.apiKey,
           'Content-Type': 'application/json',
           'Accept': 'application/json'
         },
-        timeout: 30000
+        timeout: 12000
       })
     })
 
@@ -126,7 +133,7 @@ describe('QlooService', () => {
       expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search', {
         params: {
           q: 'Test Entity',
-          type: 'movie',
+          types: 'movie',
           limit: 10
         }
       })
@@ -207,9 +214,16 @@ describe('QlooService', () => {
 
       mockAxiosInstance.get.mockResolvedValueOnce(mockResponse)
 
-      const result = await qlooService.getEntityInsights('entity-123')
+      const result = await qlooService.getEntityInsights('entity-123', 'movie')
 
-      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/entities/entity-123/insights')
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/v2/insights', {
+        params: {
+          'filter.type': 'urn:tag',
+          'filter.tag.types': 'urn:tag:genre:media,urn:tag:keyword:media',
+          'filter.parents.types': 'urn:entity:movie',
+          'signal.interests.entities': 'entity-123'
+        }
+      })
       expect(result).toEqual(mockInsights)
     })
 
@@ -226,21 +240,33 @@ describe('QlooService', () => {
 
       mockAxiosInstance.get.mockRejectedValueOnce(mockError)
 
-      await expect(qlooService.getEntityInsights('invalid-id')).rejects.toThrow(QlooServiceError)
+      await expect(qlooService.getEntityInsights('invalid-id', 'movie')).rejects.toThrow(QlooServiceError)
       expect(mockAxiosInstance.get).toHaveBeenCalledTimes(1)
     })
   })
 
   describe('getCrossDomainRecommendations', () => {
     it('should successfully get cross-domain recommendations', async () => {
-      const mockResponse = {
+      // Mock response for each domain
+      const mockBookResponse = {
         data: {
-          recommendations: mockRecommendations,
-          total: 2
+          results: {
+            entities: [mockRecommendations[0]]
+          }
+        }
+      }
+      
+      const mockRestaurantResponse = {
+        data: {
+          results: {
+            entities: [mockRecommendations[1]]
+          }
         }
       }
 
-      mockAxiosInstance.post.mockResolvedValueOnce(mockResponse)
+      mockAxiosInstance.get
+        .mockResolvedValueOnce(mockBookResponse)
+        .mockResolvedValueOnce(mockRestaurantResponse)
 
       const result = await qlooService.getCrossDomainRecommendations(
         mockInsights.tags,
@@ -248,36 +274,54 @@ describe('QlooService', () => {
         5
       )
 
-      expect(mockAxiosInstance.post).toHaveBeenCalledWith('/recommendations/cross-domain', {
-        tags: ['melancholy', 'experimental'],
-        domains: ['book', 'restaurant'],
-        limit: 5,
-        min_affinity: 0.3
+      // Should make requests for each domain sequentially
+      expect(mockAxiosInstance.get).toHaveBeenCalledTimes(2)
+      expect(mockAxiosInstance.get).toHaveBeenNthCalledWith(1, '/v2/insights', {
+        params: {
+          'filter.type': 'urn:entity:book',
+          'signal.interests.tags': 'melancholy,experimental',
+          'limit': 8
+        },
+        timeout: 12000
+      })
+      expect(mockAxiosInstance.get).toHaveBeenNthCalledWith(2, '/v2/insights', {
+        params: {
+          'filter.type': 'urn:entity:place',
+          'signal.interests.tags': 'melancholy,experimental',
+          'limit': 8
+        },
+        timeout: 12000
       })
       expect(result).toEqual(mockRecommendations)
     })
 
     it('should use default limit when not specified', async () => {
-      const mockResponse = {
+      const mockBookResponse = {
         data: {
-          recommendations: mockRecommendations,
-          total: 2
+          results: {
+            entities: [mockRecommendations[0]]
+          }
+        }
+      }
+      
+      const mockRestaurantResponse = {
+        data: {
+          results: {
+            entities: [mockRecommendations[1]]
+          }
         }
       }
 
-      mockAxiosInstance.post.mockResolvedValueOnce(mockResponse)
+      mockAxiosInstance.get
+        .mockResolvedValueOnce(mockBookResponse)
+        .mockResolvedValueOnce(mockRestaurantResponse)
 
       await qlooService.getCrossDomainRecommendations(
         mockInsights.tags,
         ['book', 'restaurant']
       )
 
-      expect(mockAxiosInstance.post).toHaveBeenCalledWith('/recommendations/cross-domain', {
-        tags: ['melancholy', 'experimental'],
-        domains: ['book', 'restaurant'],
-        limit: 5,
-        min_affinity: 0.3
-      })
+      expect(mockAxiosInstance.get).toHaveBeenCalledTimes(2)
     })
   })
 
@@ -313,6 +357,7 @@ describe('QlooService', () => {
 
       const result = await qlooService.getEntityRecommendations(
         'entity-123',
+        'movie',
         ['book', 'restaurant'],
         10
       )

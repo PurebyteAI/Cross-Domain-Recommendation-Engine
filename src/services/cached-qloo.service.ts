@@ -18,60 +18,83 @@ export class CachedQlooService extends QlooService {
    */
   async searchEntity(name: string, type: string): Promise<QlooEntity[]> {
     const cacheKey = await CacheUtils.generateEntitySearchKey(name, type);
+    let cached: QlooEntity[] | null = null;
     
     // Try to get from cache first
-    const cached = await cacheService.get<QlooEntity[]>(
-      CACHE_NAMESPACES.QLOO_ENTITY_SEARCH,
-      cacheKey
-    );
-    
-    if (cached) {
-      // Check if cached data contains fallback entities
-      const hasFallbackData = cached.some(entity => 
-        entity.metadata?.fallback === true ||
-        entity.id === '18B098FD-3D84-4609-BFF3-ADF9A0B00E40' // Known fallback ID
+    try {
+      cached = await cacheService.get<QlooEntity[]>(
+        CACHE_NAMESPACES.QLOO_ENTITY_SEARCH,
+        cacheKey
       );
       
-      if (hasFallbackData) {
+      if (cached) {
+        // Check if cached data contains fallback entities
+        const hasFallbackData = cached.some(entity => 
+          entity.metadata?.fallback === true ||
+          entity.id === '18B098FD-3D84-4609-BFF3-ADF9A0B00E40' // Known fallback ID
+        );
+        
+        if (!hasFallbackData) {
+          console.log(`[CachedQlooService] Cache hit for entity search: ${name} (${type})`);
+          return cached;
+        }
+        
         console.log(`[CachedQlooService] Found cached fallback entity for ${name} (${type}), retrying API`);
-        // Don't use cached fallback data, try API again
-      } else {
-        console.log(`[CachedQlooService] Cache hit for entity search: ${name} (${type})`);
+      }
+    } catch (error) {
+      console.error(`[CachedQlooService] Error in searchEntity cache lookup:`, error);
+      // Continue to API call despite cache errors
+    }
+    
+    // Cache miss, fallback data, or cache error - fetch from API
+    try {
+      console.log(`[CachedQlooService] Cache miss or bypass for entity search: ${name} (${type})`);
+      const results = await super.searchEntity(name, type);
+      
+      try {
+        // Check if we got real data or fallback data
+        const hasRealData = results.some(entity => 
+          !entity.metadata?.fallback &&
+          entity.id !== '18B098FD-3D84-4609-BFF3-ADF9A0B00E40'
+        );
+        
+        if (hasRealData) {
+          // Store real data in cache for 24 hours
+          console.log(`[CachedQlooService] Caching real entity data for 24 hours`);
+          await cacheService.set(
+            CACHE_NAMESPACES.QLOO_ENTITY_SEARCH,
+            cacheKey,
+            results,
+            24 * 60 * 60 // 24 hours
+          );
+        } else {
+          // Store fallback data for only 5 minutes
+          console.log(`[CachedQlooService] Caching fallback entity data for 5 minutes only`);
+          await cacheService.set(
+            CACHE_NAMESPACES.QLOO_ENTITY_SEARCH,
+            cacheKey,
+            results,
+            5 * 60 // 5 minutes
+          );
+        }
+      } catch (cacheError) {
+        console.error(`[CachedQlooService] Error caching entity search results:`, cacheError);
+        // Continue despite cache write errors, at least we have the results to return
+      }
+      
+      return results;
+    } catch (apiError) {
+      console.error(`[CachedQlooService] API error in searchEntity:`, apiError);
+      
+      // If we have fallback cached data, return it even though we tried to avoid using it
+      if (cached && cached.length > 0) {
+        console.log(`[CachedQlooService] Falling back to cached data after API error`);
         return cached;
       }
+      
+      // Re-throw so upstream can handle
+      throw apiError;
     }
-
-    // Cache miss or fallback data - fetch from API
-    console.log(`[CachedQlooService] Cache miss for entity search: ${name} (${type})`);
-    const results = await super.searchEntity(name, type);
-    
-    // Check if we got real data or fallback data
-    const hasRealData = results.some(entity => 
-      !entity.metadata?.fallback &&
-      entity.id !== '18B098FD-3D84-4609-BFF3-ADF9A0B00E40'
-    );
-    
-    if (hasRealData) {
-      // Store real data in cache for 24 hours
-      console.log(`[CachedQlooService] Caching real entity data for 24 hours`);
-      await cacheService.set(
-        CACHE_NAMESPACES.QLOO_ENTITY_SEARCH,
-        cacheKey,
-        results,
-        24 * 60 * 60 // 24 hours
-      );
-    } else {
-      // Store fallback data for only 5 minutes
-      console.log(`[CachedQlooService] Caching fallback entity data for 5 minutes only`);
-      await cacheService.set(
-        CACHE_NAMESPACES.QLOO_ENTITY_SEARCH,
-        cacheKey,
-        results,
-        5 * 60 // 5 minutes
-      );
-    }
-    
-    return results;
   }
 
   /**
@@ -127,27 +150,33 @@ export class CachedQlooService extends QlooService {
     limit: number = 5
   ): Promise<QlooRecommendation[]> {
     const cacheKey = await CacheUtils.generateRecommendationKey(tags, targetDomains);
+    let cached: QlooRecommendation[] | null = null;
     
     // Try to get from cache first
-    const cached = await cacheService.get<QlooRecommendation[]>(
-      CACHE_NAMESPACES.QLOO_RECOMMENDATIONS,
-      cacheKey
-    );
-    
-    if (cached) {
-      // Check if cached data contains fallback entities
-      const hasFallbackData = cached.some(rec => 
-        rec.id.startsWith('fallback-') || 
-        rec.metadata?.source === 'fallback'
+    try {
+      cached = await cacheService.get<QlooRecommendation[]>(
+        CACHE_NAMESPACES.QLOO_RECOMMENDATIONS,
+        cacheKey
       );
       
-      if (hasFallbackData) {
+      if (cached) {
+        // Check if cached data contains fallback entities
+        const hasFallbackData = cached.some(rec => 
+          rec.id.startsWith('fallback-') || 
+          rec.metadata?.source === 'fallback'
+        );
+        
+        if (!hasFallbackData) {
+          console.log(`[CachedQlooService] Cache hit for cross-domain recommendations (real data)`);
+          return cached.slice(0, limit);
+        }
+        
         console.log(`[CachedQlooService] Found cached fallback data, bypassing cache to retry API`);
         // Don't use cached fallback data, try API again
-      } else {
-        console.log(`[CachedQlooService] Cache hit for cross-domain recommendations (real data)`);
-        return cached.slice(0, limit);
       }
+    } catch (cacheError) {
+      console.error(`[CachedQlooService] Error in recommendation cache lookup:`, cacheError);
+      // Continue to API call despite cache errors
     }
 
     // Cache miss or fallback data - fetch from API with error handling
@@ -156,35 +185,46 @@ export class CachedQlooService extends QlooService {
     try {
       const recommendations = await super.getCrossDomainRecommendations(tags, targetDomains, limit);
       
-      // Check if we got real data or fallback data
-      const hasRealData = recommendations.some(rec => 
-        !rec.id.startsWith('fallback-') && 
-        rec.metadata?.source !== 'fallback'
-      );
-      
-      if (hasRealData) {
-        // Cache real data for 24 hours
-        console.log(`[CachedQlooService] Caching real recommendations for 24 hours`);
-        await cacheService.set(
-          CACHE_NAMESPACES.QLOO_RECOMMENDATIONS,
-          cacheKey,
-          recommendations,
-          24 * 60 * 60 // 24 hours
+      try {
+        // Check if we got real data or fallback data
+        const hasRealData = recommendations.some(rec => 
+          !rec.id.startsWith('fallback-') && 
+          rec.metadata?.source !== 'fallback'
         );
-      } else {
-        // Cache fallback data for only 5 minutes to retry soon
-        console.log(`[CachedQlooService] Caching fallback recommendations for 5 minutes only`);
-        await cacheService.set(
-          CACHE_NAMESPACES.QLOO_RECOMMENDATIONS,
-          cacheKey,
-          recommendations,
-          5 * 60 // 5 minutes
-        );
+        
+        if (hasRealData) {
+          // Cache real data for 24 hours
+          console.log(`[CachedQlooService] Caching real recommendations for 24 hours`);
+          await cacheService.set(
+            CACHE_NAMESPACES.QLOO_RECOMMENDATIONS,
+            cacheKey,
+            recommendations,
+            24 * 60 * 60 // 24 hours
+          );
+        } else {
+          // Cache fallback data for only 5 minutes to retry soon
+          console.log(`[CachedQlooService] Caching fallback recommendations for 5 minutes only`);
+          await cacheService.set(
+            CACHE_NAMESPACES.QLOO_RECOMMENDATIONS,
+            cacheKey,
+            recommendations,
+            5 * 60 // 5 minutes
+          );
+        }
+      } catch (cachingError) {
+        console.error(`[CachedQlooService] Error caching recommendation results:`, cachingError);
+        // Continue despite cache write errors, we still have results to return
       }
       
       return recommendations;
     } catch (error) {
       console.warn(`[CachedQlooService] API call failed, attempting fallback recommendations:`, error);
+      
+      // If we have fallback cached data, use it even though we tried to avoid it
+      if (cached && cached.length > 0) {
+        console.log(`[CachedQlooService] Using cached fallback data after API error`);
+        return cached.slice(0, limit);
+      }
       
       // Try to get fallback recommendations from cache or default data
       const fallbackRecommendations = await this.getFallbackRecommendations(tags, targetDomains, limit);

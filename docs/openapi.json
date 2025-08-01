@@ -1,0 +1,343 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Cross-Domain Recommendation Engine API",
+    "description": "API documentation for the Cross-Domain Recommendation Engine. This spec should be updated as endpoints change.",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:3000/api",
+      "description": "Local development server"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "clerkAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "Authorization",
+        "description": "Authentication using Clerk. Format: Bearer {token}"
+      }
+    },
+    "schemas": {
+      "UsageStatistics": {
+        "type": "object",
+        "properties": {
+          "currentUsage": {
+            "type": "object",
+            "properties": {
+              "minute": {
+                "type": "object",
+                "properties": {
+                  "used": { "type": "number" },
+                  "limit": { "type": "number" },
+                  "resetTime": { "type": "number" }
+                }
+              },
+              "hour": {
+                "type": "object",
+                "properties": {
+                  "used": { "type": "number" },
+                  "limit": { "type": "number" },
+                  "resetTime": { "type": "number" }
+                }
+              },
+              "day": {
+                "type": "object",
+                "properties": {
+                  "used": { "type": "number" },
+                  "limit": { "type": "number" },
+                  "resetTime": { "type": "number" }
+                }
+              },
+              "tier": { "type": "string" }
+            }
+          },
+          "analytics": {
+            "type": "object",
+            "properties": {
+              "totalRequests": { "type": "number" },
+              "requestsToday": { "type": "number" },
+              "averageResponseTime": { "type": "number" },
+              "errorRate": { "type": "number" }
+            }
+          },
+          "generatedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "UserStats": {
+        "type": "object",
+        "properties": {
+          "totalRecommendations": { "type": "number" },
+          "matchRate": { "type": "number" },
+          "connectedDomains": { "type": "number" },
+          "dailyLimit": { "type": "number" },
+          "requestsToday": { "type": "number" },
+          "favoriteEndpoints": { "type": "array", "items": { "type": "string" } },
+          "tier": { "type": "string" }
+        }
+      }
+    }
+  },
+  "security": [
+    { "clerkAuth": [] }
+  ],
+  "paths": {
+    "/user/usage": {
+      "get": {
+        "summary": "Get user usage statistics",
+        "tags": ["User"],
+        "security": [{ "clerkAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Usage statistics for the authenticated user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageStatistics"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - User is not authenticated"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
+    "/user/stats": {
+      "get": {
+        "summary": "Get user dashboard statistics",
+        "tags": ["User"],
+        "security": [{ "clerkAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Dashboard statistics for the authenticated user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserStats"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - User is not authenticated"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
+    "/v1/recommendations": {
+      "post": {
+        "summary": "Get cross-domain recommendations",
+        "description": "Generate personalized recommendations across multiple domains based on input entities",
+        "tags": ["Recommendations"],
+        "security": [{ "clerkAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["entities"],
+                "properties": {
+                  "entities": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "example": "Radiohead"
+                        },
+                        "type": {
+                          "type": "string",
+                          "example": "artist"
+                        }
+                      }
+                    }
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "default": 5,
+                    "example": 5
+                  },
+                  "includeExplanations": {
+                    "type": "boolean",
+                    "default": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response with recommendations",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "input": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "recommendations": {
+                      "type": "object"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests - Rate limit exceeded"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
+    "/user/profile": {
+      "get": {
+        "summary": "Get user profile",
+        "description": "Returns the authenticated user's profile information",
+        "tags": ["User"],
+        "security": [{ "clerkAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "User profile information",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": { "type": "string" },
+                    "email": { "type": "string" },
+                    "display_name": { "type": "string", "nullable": true },
+                    "tier": { "type": "string" },
+                    "usage_limit": { "type": "number" },
+                    "created_at": { "type": "string", "format": "date-time" },
+                    "updated_at": { "type": "string", "format": "date-time" }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - User is not authenticated"
+          },
+          "404": {
+            "description": "User profile not found"
+          }
+        }
+      }
+    },
+    "/user/history": {
+      "get": {
+        "summary": "Get user recommendation history",
+        "description": "Returns the user's previous recommendation requests",
+        "tags": ["User", "Recommendations"],
+        "security": [{ "clerkAuth": [] }],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "integer",
+              "default": 10
+            },
+            "description": "Number of history items to return"
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "type": "integer",
+              "default": 0
+            },
+            "description": "Number of items to skip"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "User recommendation history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": { "type": "string" },
+                          "input_entity": { "type": "object" },
+                          "recommendations": { "type": "object" },
+                          "created_at": { "type": "string", "format": "date-time" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - User is not authenticated"
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Check API health status",
+        "description": "Returns the health status of the API and its dependencies",
+        "tags": ["System"],
+        "responses": {
+          "200": {
+            "description": "System is healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "healthy"
+                    },
+                    "uptime": {
+                      "type": "number"
+                    },
+                    "services": {
+                      "type": "object"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "System is unhealthy"
+          }
+        }
+      }
+    }
+  }
+}

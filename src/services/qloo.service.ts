@@ -36,7 +36,7 @@ export class QlooService {
         'Content-Type': 'application/json',
         'Accept': 'application/json'
       },
-      timeout: 15000 // Reduced to 15 second timeout for better reliability
+      timeout: 20000 // Increased to 20 seconds to allow more processing time for complex queries
     })
 
     // Add request interceptor for logging
@@ -245,26 +245,76 @@ export class QlooService {
 
     console.log(`[QlooService] Getting recommendations for ${allowedDomains.length} allowed domains: ${allowedDomains.join(', ')}`)
     
-    // Get recommendations for each target domain with individual error handling
-    const promises = allowedDomains.map(async (domain) => {
-      try {
-        const domainRecs = await this.getRecommendationsForDomain(tags, domain, limit)
-        return { domain, recommendations: domainRecs }
-      } catch (error) {
-        console.warn(`[QlooService] Failed to get recommendations for domain ${domain}:`, error)
-        return { domain, recommendations: [] }
-      }
-    })
-
-    // Wait for all requests to complete (parallel processing)
-    const results = await Promise.allSettled(promises)
+    // Process domains sequentially to reduce server load and avoid timeouts
+    // This is slower but more reliable than parallel processing
+    // Process book domain separately at the end since it's most likely to timeout
+    const nonBookDomains = allowedDomains.filter(d => d !== 'book');
+    const hasBookDomain = allowedDomains.includes('book');
     
-    // Collect successful results
-    results.forEach((result) => {
-      if (result.status === 'fulfilled' && result.value.recommendations.length > 0) {
-        recommendations.push(...result.value.recommendations)
+    // First process all domains except book
+    for (const domain of nonBookDomains) {
+      try {
+        console.log(`[QlooService] Processing domain: ${domain}`)
+        const domainRecs = await this.getRecommendationsForDomain(tags, domain, limit)
+        if (domainRecs.length > 0) {
+          recommendations.push(...domainRecs)
+          console.log(`[QlooService] Successfully got ${domainRecs.length} recommendations for ${domain}`)
+        } else {
+          console.warn(`[QlooService] No recommendations returned for domain ${domain}`)
+          // Add fallbacks for empty results
+          const fallbacks = this.createFallbackRecommendations(domain, limit, tags.map(t => t.tag_id));
+          if (fallbacks.length > 0) {
+            recommendations.push(...fallbacks);
+            console.log(`[QlooService] Added ${fallbacks.length} fallback recommendations for ${domain}`);
+          }
+        }
+        
+        // Add small delay between requests to be respectful to the API
+        if (nonBookDomains.indexOf(domain) < nonBookDomains.length - 1) {
+          await this.sleep(200) // 200ms delay between domains
+        }
+      } catch (error) {
+        console.warn(`[QlooService] Failed to get recommendations for domain ${domain}:`, error instanceof Error ? error.message : error)
+        // Add fallbacks on error
+        try {
+          const fallbacks = this.createFallbackRecommendations(domain, limit, tags.map(t => t.tag_id));
+          recommendations.push(...fallbacks);
+          console.log(`[QlooService] Added ${fallbacks.length} fallback recommendations after error for ${domain}`);
+        } catch (fallbackError) {
+          console.error(`[QlooService] Failed to create fallbacks for ${domain}:`, fallbackError);
+        }
+        continue
       }
-    })
+    }
+    
+    // Process book domain last if it exists
+    if (hasBookDomain) {
+      try {
+        console.log(`[QlooService] Processing problematic domain: book (limited timeout)`)
+        // Use createFallbackRecommendations as immediate fallback for book domain
+        const bookRecs = await Promise.race([
+          this.getRecommendationsForDomain(tags, 'book', limit),
+          // If not resolved in 8 seconds, use fallbacks
+          new Promise<QlooRecommendation[]>(resolve => 
+            setTimeout(() => {
+              console.log('[QlooService] Using pre-emptive fallbacks for book domain due to expected timeout');
+              resolve(this.createFallbackRecommendations('book', limit, tags.map(t => t.tag_id)));
+            }, 8000)
+          )
+        ]);
+        
+        if (bookRecs.length > 0) {
+          recommendations.push(...bookRecs)
+          console.log(`[QlooService] Got ${bookRecs.length} recommendations for book domain`)
+        }
+      } catch (error) {
+        console.warn('[QlooService] Failed to get book recommendations:', error instanceof Error ? error.message : error)
+        // Use fallbacks on error
+        const bookFallbacks = this.createFallbackRecommendations('book', limit, tags.map(t => t.tag_id));
+        recommendations.push(...bookFallbacks);
+        console.log(`[QlooService] Added ${bookFallbacks.length} fallback recommendations for book domain after error`);
+      }
+    }
     
     console.log(`[QlooService] Successfully retrieved ${recommendations.length} total recommendations`)
     return recommendations
@@ -272,28 +322,87 @@ export class QlooService {
 
   /**
    * Get recommendations for a specific domain using v2/insights
-   * Enhanced with better error handling and timeout management
+   * Enhanced with progressive fallback and timeout management
    */
   private async getRecommendationsForDomain(
     tags: QlooTag[], 
     targetDomain: string, 
     limit: number
   ): Promise<QlooRecommendation[]> {
+    // Adjust strategy based on known domain behavior
+    const isComplexDomain = ['book', 'music', 'tv_show'].includes(targetDomain);
+    
+    // Progressive fallback strategy: try with fewer tags if initial request fails
+    // Start with fewer tags for domains known to have timeout issues
+    const tagReductionSteps = isComplexDomain 
+      ? [
+          Math.min(tags.length, 3),  // Start with only 3 tags for complex domains
+          2,                          // Quick fallback to 2 tags
+          1                           // Final fallback: 1 tag
+        ]
+      : [
+          Math.min(tags.length, 8),  // Start with max 8 tags for normal domains
+          Math.min(tags.length, 5),  // Fallback to 5 tags
+          Math.min(tags.length, 3),  // Fallback to 3 tags
+          1                           // Final fallback: 1 tag
+        ]
+
+    for (let i = 0; i < tagReductionSteps.length; i++) {
+      const tagCount = tagReductionSteps[i]
+      const tagIds = tags.slice(0, tagCount).map(tag => tag.tag_id)
+      
+      try {
+        console.log(`[QlooService] Attempt ${i + 1}: Requesting ${limit} recommendations for domain: ${targetDomain} with ${tagCount} tags`)
+        console.log(`[QlooService] Using tags: ${tagIds.join(', ')}`)
+        
+        const result = await this.makeRecommendationRequest(targetDomain, tagIds, limit)
+        if (result.length > 0) {
+          console.log(`[QlooService] Success with ${tagCount} tags for ${targetDomain}`)
+          return result
+        }
+      } catch (error) {
+        console.warn(`[QlooService] Failed with ${tagCount} tags for ${targetDomain}:`, error instanceof Error ? error.message : error)
+        
+        // If this is the last attempt, or it's not a timeout error, rethrow
+        if (i === tagReductionSteps.length - 1 || (error instanceof Error && !error.message.includes('timeout'))) {
+          throw error
+        }
+        
+        // Continue to next fallback step for timeout errors
+        continue
+      }
+    }
+
+    // If all attempts failed, return empty array
+    console.warn(`[QlooService] All fallback attempts failed for ${targetDomain}, returning empty results`)
+    return []
+  }
+
+  /**
+   * Make the actual recommendation request with timeout handling
+   */
+  private async makeRecommendationRequest(
+    targetDomain: string,
+    tagIds: string[],
+    limit: number
+  ): Promise<QlooRecommendation[]> {
     return this.withRetry(async () => {
       const filterType = this.mapToInsightsType(targetDomain)
-      const tagIds = tags.slice(0, 3).map(tag => tag.tag_id) // Use top 3 tags for better results
       
-      console.log(`[QlooService] Requesting ${limit} recommendations for domain: ${targetDomain}`)
-      console.log(`[QlooService] Using tags: ${tagIds.join(', ')}`)
-      console.log(`[QlooService] Filter type: ${filterType}`)
+      console.log(`[QlooService] Making request for ${targetDomain} with filter type: ${filterType}`)
+      
+      // Adjust timeout and limit based on domain complexity
+      const isDifficultDomain = ['book', 'music', 'tv_show'].includes(targetDomain);
+      const domainTimeout = isDifficultDomain ? 25000 : 15000;
+      const itemLimit = isDifficultDomain ? Math.min(limit, 5) : Math.min(limit, 10);
       
       const response = await this.client.get<any>('/v2/insights', {
         params: {
           'filter.type': filterType,
           'signal.interests.tags': tagIds.join(','),
-          'limit': Math.min(limit, 10) // Increase limit for better results
+          'limit': itemLimit // Adjust limit based on domain complexity
         },
-        timeout: 15000 // Increase timeout for better reliability
+        timeout: domainTimeout // Adjust timeout based on domain complexity
       })
       
       console.log(`[QlooService] Raw response for ${targetDomain}:`, JSON.stringify(response.data, null, 2))
@@ -308,7 +417,6 @@ export class QlooService {
         .filter((entity: any) => {
           const hasId = entity.entity_id || entity.id
           const hasName = entity.name
-          console.log(`[QlooService] Entity check - ID: ${hasId}, Name: ${hasName}`, entity)
           return hasId && hasName
         })
         .map((entity: any) => ({
@@ -329,13 +437,12 @@ export class QlooService {
       // If no valid entities, create fallback recommendations with proper metadata
       if (recommendations.length === 0) {
         console.warn(`[QlooService] No valid entities returned for ${targetDomain}, creating fallback recommendations`)
-        console.warn(`[QlooService] Response structure:`, JSON.stringify(response.data, null, 2))
         return this.createFallbackRecommendations(targetDomain, limit, tagIds)
       }
 
       console.log(`[QlooService] Got ${recommendations.length} recommendations for ${targetDomain}`)
       return recommendations
-    }, `getRecommendationsForDomain(${tags.length} tags, ${targetDomain})`)
+    }, `makeRecommendationRequest(${tagIds.length} tags, ${targetDomain})`)
   }
 
   /**
@@ -383,23 +490,75 @@ export class QlooService {
     limit: number, 
     tagIds: string[]
   ): QlooRecommendation[] {
-    const fallbackRecommendations: QlooRecommendation[] = []
+    // Expanded domain-specific fallbacks to ensure reasonable results
+    const fallbacks: Record<string, string[]> = {
+      'movie': [
+        'The Shawshank Redemption', 'Inception', 'The Dark Knight', 'Pulp Fiction', 
+        'The Godfather', 'Everything Everywhere All at Once', 'Parasite', 'Oppenheimer'
+      ],
+      'tv_show': [
+        'Breaking Bad', 'Game of Thrones', 'Stranger Things', 'The Last of Us', 
+        'Ted Lasso', 'Succession', 'The Bear', 'Severance'
+      ],
+      'music': [
+        'Taylor Swift', 'Kendrick Lamar', 'Beyoncé', 'The Beatles', 
+        'Billie Eilish', 'Bad Bunny', 'The Weeknd', 'Olivia Rodrigo'
+      ],
+      'book': [
+        'Fourth Wing', 'The Seven Husbands of Evelyn Hugo', 'It Ends with Us', 
+        'Lessons in Chemistry', 'The Midnight Library', 'Atomic Habits',
+        'Tomorrow, and Tomorrow, and Tomorrow', 'The Silent Patient'
+      ],
+      'podcast': [
+        'The Daily', 'Crime Junkie', 'SmartLess', 'Call Her Daddy',
+        'Huberman Lab', 'Morbid', 'This American Life', 'Stuff You Should Know'
+      ],
+      'video_game': [
+        'Baldur\'s Gate 3', 'The Legend of Zelda: Tears of the Kingdom', 'Starfield',
+        'Hogwarts Legacy', 'Final Fantasy XVI', 'Spider-Man 2', 'Diablo IV', 'Elden Ring'
+      ]
+    };
     
-    // Create a few fallback recommendations with proper metadata
-    for (let i = 0; i < Math.min(limit, 3); i++) {
-      fallbackRecommendations.push({
-        id: `fallback-${targetDomain}-${i}-${Date.now()}`,
-        name: `Popular ${targetDomain} recommendation ${i + 1}`,
-        type: targetDomain,
-        confidence: 0.3 + (Math.random() * 0.2), // 0.3-0.5 confidence
-        metadata: {
-          fallback: true,
-          source: 'qloo-service',
-          originalDomain: targetDomain,
-          tagIds: tagIds,
-          reason: 'API returned no valid entities'
-        }
-      })
+    const fallbackRecommendations: QlooRecommendation[] = [];
+    
+    // If we have domain-specific fallbacks, use them
+    if (fallbacks[targetDomain]) {
+      const domainFallbacks = fallbacks[targetDomain];
+      const itemCount = Math.min(limit, domainFallbacks.length);
+      
+      // Create recommendations from our curated list
+      for (let i = 0; i < itemCount; i++) {
+        fallbackRecommendations.push({
+          id: `fallback-${targetDomain}-${i}-${Date.now()}`,
+          name: domainFallbacks[i],
+          type: targetDomain,
+          confidence: 0.4 + (Math.random() * 0.3), // 0.4-0.7 confidence
+          metadata: {
+            fallback: true,
+            source: 'curated-fallback',
+            originalDomain: targetDomain,
+            tagIds: tagIds,
+            reason: 'Using curated fallback due to API timeout'
+          }
+        });
+      }
+    } else {
+      // Create generic fallbacks for domains we don't have specific data for
+      for (let i = 0; i < Math.min(limit, 5); i++) {
+        fallbackRecommendations.push({
+          id: `fallback-${targetDomain}-${i}-${Date.now()}`,
+          name: `Popular ${targetDomain} recommendation ${i + 1}`,
+          type: targetDomain,
+          confidence: 0.3 + (Math.random() * 0.2), // 0.3-0.5 confidence
+          metadata: {
+            fallback: true,
+            source: 'generic-fallback',
+            originalDomain: targetDomain,
+            tagIds: tagIds,
+            reason: 'API timeout or no valid entities'
+          }
+        });
+      }
     }
     
     return fallbackRecommendations
@@ -479,15 +638,48 @@ export class QlooService {
           }
         }
 
-        // Don't retry on timeout errors either - fail fast
+        // Handle timeout errors with improved strategy
         if (error instanceof Error && error.message.includes('timeout')) {
-          console.error(`[QlooService] Timeout error for ${operationName}, not retrying`)
-          throw new QlooServiceError(
-            `Request timeout for ${operationName}. Try again with fewer entities or simpler queries.`,
-            408,
-            operationName,
-            { suggestion: 'Reduce query complexity or check network connection' }
+          console.error(`[QlooService] Timeout error for ${operationName} on attempt ${attempt + 1}`)
+          
+          // Determine if this operation is a recommendation for a problematic domain
+          const isRecommendationForComplexDomain = 
+            operationName.includes('makeRecommendationRequest') && 
+            ['book', 'music', 'tv_show'].some(domain => operationName.includes(domain));
+          
+          // If this is a complex domain recommendation and not our first attempt,
+          // return empty results instead of retrying endlessly
+          if (isRecommendationForComplexDomain && attempt > 0) {
+            console.warn(`[QlooService] Abandoning complex domain recommendation due to repeated timeouts: ${operationName}`);
+            return [] as unknown as T; // This will be caught and handled by the caller
+          }
+          
+          // Only fail fast on the last attempt for non-recommendation operations
+          if (attempt === this.retryConfig.maxRetries) {
+            // For recommendation operations that time out repeatedly, return empty results
+            if (operationName.includes('makeRecommendationRequest')) {
+              console.warn(`[QlooService] Maximum retries exceeded for ${operationName}, returning empty results`);
+              return [] as unknown as T;
+            }
+            
+            throw new QlooServiceError(
+              `Request timeout for ${operationName} after ${this.retryConfig.maxRetries} attempts. Try again with fewer entities or simpler queries.`,
+              408,
+              operationName,
+              { suggestion: 'Reduce query complexity, check network connection, or try again later' }
+            )
+          }
+          
+          // For non-final attempts, continue with exponential backoff
+          // Use shorter delays for problematic domains to fail faster
+          const timeoutMultiplier = isRecommendationForComplexDomain ? 1 : 2;
+          const backoffDelay = Math.min(
+            this.retryConfig.initialDelay * Math.pow(this.retryConfig.backoffMultiplier, attempt) * timeoutMultiplier,
+            this.retryConfig.maxDelay
           )
+          console.log(`[QlooService] Waiting ${backoffDelay}ms before retry due to timeout`)
+          await this.sleep(backoffDelay)
+          continue
         }
 
         if (attempt === this.retryConfig.maxRetries) {

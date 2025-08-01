@@ -5,7 +5,12 @@ export const SERVICE_CONFIG: ServiceConfig = {
     maxRetries: 3,
     backoffMultiplier: 2,
     initialDelay: 1000,
-    maxDelay: 10000
+    maxDelay: 10000,
+    timeout: 12000, // 12 seconds
+    maxTagsPerRequest: 8, // Start with max 8 tags
+    tagReductionSteps: [8, 5, 3, 1], // Progressive fallback
+    sequentialProcessing: true, // Process domains sequentially to reduce load
+    delayBetweenRequests: 200 // 200ms delay between domains
   },
   gemini: {
     maxRetries: 2,

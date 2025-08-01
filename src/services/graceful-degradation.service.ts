@@ -6,6 +6,40 @@ import { supabase } from '@/lib/supabase'
  */
 export class GracefulDegradationService {
   /**
+   * Get limited recommendations for rate-limited users
+   * Returns cached or simplified recommendations to provide some value
+   */
+  static async getRateLimitedRecommendations(
+    request: RecommendationRequest,
+    userId: string,
+    tier: string
+  ): Promise<RecommendationResponse> {
+    console.log(`[GracefulDegradation] Providing rate-limited recommendations for ${tier} user`)
+    
+    // First try to get cached recommendations
+    const cachedResponse = await this.getCachedRecommendations(request, userId)
+    if (cachedResponse) {
+      return {
+        ...cachedResponse,
+        success: true,
+        cached: true,
+        rateLimited: true,
+        message: `You've reached your ${tier} tier limit. Here are your most recent recommendations.`
+      }
+    }
+
+    // Fallback to simplified popular recommendations
+    const fallbackResponse = await this.getFallbackRecommendations(request)
+    return {
+      ...fallbackResponse,
+      success: true,
+      cached: false,
+      rateLimited: true,
+      message: `You've reached your ${tier} tier limit. Here are some popular recommendations. Upgrade for personalized results!`
+    }
+  }
+
+  /**
    * Get cached recommendations from previous successful requests
    */
   static async getCachedRecommendations(

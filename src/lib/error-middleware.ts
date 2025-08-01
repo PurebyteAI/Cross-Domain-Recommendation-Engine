@@ -13,8 +13,17 @@ export function withErrorHandler<T extends unknown[]>(
     const requestId = crypto.randomUUID()
     
     try {
+      // Add request context that can be accessed through the request object
+      const context = { requestId, startTime }
+      Object.defineProperty(request, 'context', { value: context, writable: false })
+      
       // Add request ID to headers for tracking
       const response = await handler(request, ...args)
+      
+      // Handle undefined response
+      if (!response) {
+        throw new Error('API handler returned undefined response')
+      }
       
       // Add standard headers to successful responses
       response.headers.set('X-Request-ID', requestId)
@@ -30,6 +39,19 @@ export function withErrorHandler<T extends unknown[]>(
       } catch (authError) {
         // Auth error - user context not available
         console.warn('[ErrorMiddleware] Could not get user context:', authError)
+      }
+      
+      // Add rate limit information if present
+      const rateLimitInfo: Record<string, any> = {}
+      try {
+        const rateLimitHeader = request.headers.get('X-RateLimit-Limit')
+        if (rateLimitHeader) {
+          rateLimitInfo.limit = rateLimitHeader
+          rateLimitInfo.remaining = request.headers.get('X-RateLimit-Remaining') 
+          rateLimitInfo.reset = request.headers.get('X-RateLimit-Reset')
+        }
+      } catch (headerError) {
+        console.warn('[ErrorMiddleware] Error extracting rate limit headers:', headerError)
       }
 
       // Create error context

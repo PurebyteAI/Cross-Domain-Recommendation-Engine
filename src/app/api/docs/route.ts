@@ -91,6 +91,7 @@ export async function GET() {
                 url: '${baseUrl}/api/docs/openapi',
                 dom_id: '#swagger-ui',
                 deepLinking: true,
+                validatorUrl: null,
                 presets: [
                     SwaggerUIBundle.presets.apis,
                     SwaggerUIStandalonePreset

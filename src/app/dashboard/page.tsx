@@ -25,7 +25,9 @@ import Link from 'next/link'
 export default function DashboardPage() {
     const { user, isLoaded } = useUser()
     const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
+    const [userStats, setUserStats] = useState<any>(null)
     const [loading, setLoading] = useState(true)
+    const [refreshing, setRefreshing] = useState(false)
     const [showOnboarding, setShowOnboarding] = useState(false)
 
     useEffect(() => {
@@ -38,9 +40,18 @@ export default function DashboardPage() {
             } else {
                 // Fetch or create user profile
                 fetchUserProfile()
+                fetchUserStats()
             }
         }
     }, [isLoaded, user])
+
+    // Auto-refresh stats every 30 seconds
+    useEffect(() => {
+        if (!showOnboarding && user) {
+            const statsInterval = setInterval(fetchUserStats, 30000)
+            return () => clearInterval(statsInterval)
+        }
+    }, [showOnboarding, user])
 
     const fetchUserProfile = async () => {
         try {
@@ -61,6 +72,48 @@ export default function DashboardPage() {
             console.error('Error fetching user profile:', error)
         } finally {
             setLoading(false)
+        }
+    }
+
+    const fetchUserStats = async () => {
+        setRefreshing(true)
+        try {
+            const response = await fetch('/api/user/stats')
+            
+            if (response.ok) {
+                const stats = await response.json()
+                setUserStats(stats)
+            } else {
+                console.error('Failed to fetch user stats')
+                // Provide fallback stats
+                setUserStats({
+                    totalRecommendations: 0,
+                    matchRate: 0,
+                    connectedDomains: 0,
+                    dailyLimit: 50,
+                    requestsToday: 0,
+                    averageResponseTime: 0,
+                    favoriteEndpoints: [],
+                    tier: 'free',
+                    lastActive: null
+                })
+            }
+        } catch (error) {
+            console.error('Error fetching user stats:', error)
+            // Provide fallback stats for better UX
+            setUserStats({
+                totalRecommendations: 0,
+                matchRate: 0,
+                connectedDomains: 0,
+                dailyLimit: 50,
+                requestsToday: 0,
+                averageResponseTime: 0,
+                favoriteEndpoints: [],
+                tier: 'free',
+                lastActive: null
+            })
+        } finally {
+            setRefreshing(false)
         }
     }
 
@@ -162,9 +215,30 @@ export default function DashboardPage() {
                 <div className="container mx-auto px-4 py-8">
                     {/* Welcome Section */}
                     <div className="text-center mb-12">
-                        <h1 className="text-4xl md:text-5xl font-bold bg-gradient-to-r from-blue-400 via-indigo-500 to-cyan-400 bg-clip-text text-transparent mb-4">
-                            Welcome back!
-                        </h1>
+                        <div className="flex justify-between items-center mb-4">
+                            <h1 className="text-4xl md:text-5xl font-bold bg-gradient-to-r from-blue-400 via-indigo-500 to-cyan-400 bg-clip-text text-transparent">
+                                Welcome back!
+                            </h1>
+                            <button 
+                                onClick={fetchUserStats}
+                                disabled={refreshing}
+                                className="flex items-center gap-2 px-4 py-2 bg-blue-600/30 hover:bg-blue-600/50 text-blue-200 rounded-lg transition-colors disabled:opacity-50"
+                            >
+                                {refreshing ? (
+                                    <>
+                                        <span className="animate-spin h-4 w-4 border-2 border-blue-200 border-t-transparent rounded-full mr-1"></span>
+                                        Refreshing...
+                                    </>
+                                ) : (
+                                    <>
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                            <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38" />
+                                        </svg>
+                                        Refresh Stats
+                                    </>
+                                )}
+                            </button>
+                        </div>
                         <p className="text-xl text-slate-300 max-w-2xl mx-auto mb-6">
                             Hey {user?.firstName || user?.emailAddresses[0]?.emailAddress.split('@')[0]}, 
                             ready to discover amazing recommendations?
@@ -193,7 +267,12 @@ export default function DashboardPage() {
                                 <div className={`w-12 h-12 bg-gradient-to-br from-blue-600 to-indigo-700 rounded-xl flex items-center justify-center`}>
                                     <Sparkles className="w-6 h-6 text-white" />
                                 </div>
-                                <span className="text-2xl font-bold text-slate-100">156</span>
+                                <span className="text-2xl font-bold text-slate-100 relative">
+                                    {userStats ? userStats.totalRecommendations : '..'}
+                                    {refreshing && (
+                                        <span className="absolute -top-1 -right-3 h-2 w-2 bg-blue-500 rounded-full animate-ping"></span>
+                                    )}
+                                </span>
                             </div>
                             <h3 className="font-semibold text-slate-100 mb-1">Recommendations</h3>
                             <p className="text-sm text-slate-300">Total generated</p>
@@ -204,7 +283,12 @@ export default function DashboardPage() {
                                 <div className={`w-12 h-12 bg-gradient-to-br from-blue-600 to-cyan-600 rounded-xl flex items-center justify-center`}>
                                     <TrendingUp className="w-6 h-6 text-white" />
                                 </div>
-                                <span className="text-2xl font-bold text-slate-100">89%</span>
+                                <span className="text-2xl font-bold text-slate-100 relative">
+                                    {userStats ? `${userStats.matchRate}%` : '..'}
+                                    {refreshing && (
+                                        <span className="absolute -top-1 -right-3 h-2 w-2 bg-blue-500 rounded-full animate-ping"></span>
+                                    )}
+                                </span>
                             </div>
                             <h3 className="font-semibold text-slate-100 mb-1">Match Rate</h3>
                             <p className="text-sm text-slate-300">Accuracy score</p>
@@ -215,7 +299,12 @@ export default function DashboardPage() {
                                 <div className={`w-12 h-12 bg-gradient-to-br from-indigo-600 to-blue-700 rounded-xl flex items-center justify-center`}>
                                     <Globe className="w-6 h-6 text-white" />
                                 </div>
-                                <span className="text-2xl font-bold text-slate-100">9</span>
+                                <span className="text-2xl font-bold text-slate-100 relative">
+                                    {userStats ? userStats.connectedDomains : '..'}
+                                    {refreshing && (
+                                        <span className="absolute -top-1 -right-3 h-2 w-2 bg-blue-500 rounded-full animate-ping"></span>
+                                    )}
+                                </span>
                             </div>
                             <h3 className="font-semibold text-slate-100 mb-1">Domains</h3>
                             <p className="text-sm text-slate-300">Connected</p>
@@ -226,7 +315,12 @@ export default function DashboardPage() {
                                 <div className={`w-12 h-12 bg-gradient-to-br ${getTierColor(userProfile?.tier || 'free')} rounded-xl flex items-center justify-center`}>
                                     {getTierIcon(userProfile?.tier || 'free')}
                                 </div>
-                                <span className="text-2xl font-bold text-slate-100">{userProfile?.usage_limit || 50}</span>
+                                <span className="text-2xl font-bold text-slate-100 relative">
+                                    {userStats ? userStats.dailyLimit - userStats.requestsToday : (userProfile?.usage_limit || 50)}
+                                    {refreshing && (
+                                        <span className="absolute -top-1 -right-3 h-2 w-2 bg-blue-500 rounded-full animate-ping"></span>
+                                    )}
+                                </span>
                             </div>
                             <h3 className="font-semibold text-slate-100 mb-1">Daily Limit</h3>
                             <p className="text-sm text-slate-300">Requests remaining</p>

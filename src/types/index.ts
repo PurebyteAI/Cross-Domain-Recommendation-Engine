@@ -39,6 +39,8 @@ export interface RecommendationResponse {
   recommendations: RecommendationsByDomain
   processingTime: number
   cached: boolean
+  rateLimited?: boolean // Indicates if response was limited due to rate limiting
+  message?: string // Optional message for rate-limited or fallback responses
   error?: string // Optional error message for failed requests
 }
 
@@ -152,6 +154,11 @@ export interface RetryConfig {
   backoffMultiplier: number
   initialDelay: number
   maxDelay: number
+  timeout?: number // Optional timeout in milliseconds
+  maxTagsPerRequest?: number // Optional max tags per request
+  tagReductionSteps?: number[] // Optional progressive fallback steps
+  sequentialProcessing?: boolean // Optional sequential vs parallel processing
+  delayBetweenRequests?: number // Optional delay between requests in ms
 }
 
 export interface ServiceConfig {

@@ -125,28 +125,57 @@ export class ErrorHandler {
     error: unknown,
     context: ErrorContext
   ): Promise<NextResponse<ErrorResponse>> {
+    // Normalize error before any other processing
     const appError = this.normalizeError(error)
     
-    // Log error with context
-    await this.logError(appError, context)
-    
-    // Create error response
-    const errorResponse = appError.toErrorResponse(context.requestId)
-    
-    // Add response headers
-    const headers: Record<string, string> = {
-      'X-Request-ID': context.requestId,
-      'X-Processing-Time': context.processingTime.toString()
+    try {
+      // Log error with context
+      await this.logError(appError, context)
+    } catch (loggingError) {
+      console.error('Failed to log error properly:', loggingError);
+      // Continue despite logging failure - user experience is more important
     }
     
-    if (appError.retryAfter) {
-      headers['Retry-After'] = appError.retryAfter.toString()
+    try {
+      // Create error response
+      const errorResponse = appError.toErrorResponse(context.requestId)
+      
+      // Add response headers
+      const headers: Record<string, string> = {
+        'X-Request-ID': context.requestId,
+        'X-Processing-Time': context.processingTime.toString(),
+        'X-Error-Code': appError.code
+      }
+      
+      if (appError.retryAfter) {
+        headers['Retry-After'] = appError.retryAfter.toString()
+      }
+      
+      // Include CORS headers for API responses
+      // Use a generic approach since we don't have direct request access here
+      headers['Access-Control-Allow-Origin'] = '*'
+      headers['Access-Control-Expose-Headers'] = 'X-Request-ID, X-Processing-Time, X-Error-Code, Retry-After'
+      
+      return NextResponse.json(errorResponse, {
+        status: appError.statusCode,
+        headers
+      })
+    } catch (responseError) {
+      // Last resort fallback if error response creation fails
+      console.error('Failed to create proper error response:', responseError);
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: { 
+            code: 'INTERNAL_ERROR',
+            message: 'An unexpected error occurred while processing the error response'
+          },
+          requestId: context.requestId,
+          timestamp: new Date().toISOString()
+        },
+        { status: 500 }
+      );
     }
-    
-    return NextResponse.json(errorResponse, {
-      status: appError.statusCode,
-      headers
-    })
   }
 
   /**
@@ -449,6 +478,45 @@ export class ErrorHandler {
     metadata?: Record<string, unknown>
   ): ErrorContext {
     const now = Date.now()
+    const additionalMetadata: Record<string, unknown> = { ...metadata }
+    
+    try {
+      // Extract query parameters
+      const queryParams: Record<string, string> = {}
+      request.nextUrl.searchParams.forEach((value, key) => {
+        queryParams[key] = value
+      })
+      
+      if (Object.keys(queryParams).length > 0) {
+        additionalMetadata.queryParams = queryParams
+      }
+      
+      // Extract headers that might be useful for debugging
+      const relevantHeaders: Record<string, string> = {}
+      const headerNames = [
+        'accept', 
+        'content-type', 
+        'user-agent', 
+        'referer', 
+        'origin',
+        'x-request-id',
+        'x-correlation-id'
+      ]
+      
+      headerNames.forEach(name => {
+        const value = request.headers.get(name)
+        if (value) {
+          relevantHeaders[name] = value
+        }
+      })
+      
+      if (Object.keys(relevantHeaders).length > 0) {
+        additionalMetadata.headers = relevantHeaders
+      }
+      
+    } catch (metadataError) {
+      console.warn('[ErrorHandler] Error extracting request metadata:', metadataError)
+    }
     
     return {
       requestId,
@@ -461,7 +529,7 @@ export class ErrorHandler {
                  undefined,
       timestamp: new Date(),
       processingTime: startTime ? now - startTime : 0,
-      metadata
+      metadata: additionalMetadata
     }
   }
 }

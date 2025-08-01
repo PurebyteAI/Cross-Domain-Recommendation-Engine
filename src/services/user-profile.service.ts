@@ -18,8 +18,36 @@ export class UserProfileService {
       })
 
       if (error) {
-        console.error('Error getting/creating user profile:', error)
-        return null
+        console.error('Error getting/creating user profile via RPC:', error)
+        
+        // Try a fallback approach if RPC fails
+        // First check if profile already exists
+        const existingProfile = await this.getProfileByClerkId(clerkUserId)
+        if (existingProfile) {
+          return existingProfile
+        }
+        
+        // If not, try to create one directly
+        const { data: newProfile, error: createError } = await supabaseAdmin
+          .from('user_profiles')
+          .insert({
+            clerk_user_id: clerkUserId,
+            email: email,
+            display_name: displayName || null,
+            tier: 'free',
+            usage_limit: 50,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          })
+          .select()
+          .single()
+          
+        if (createError) {
+          console.error('Error creating user profile directly:', createError)
+          return null
+        }
+        
+        return newProfile
       }
 
       return data
@@ -215,35 +243,46 @@ export class UserProfileService {
   }
 
   /**
-   * Get user statistics
+   * Get user statistics for dashboard
    */
   static async getUserStats(clerkUserId: string): Promise<{
-    totalRequests: number
+    totalRecommendations: number
+    matchRate: number
+    connectedDomains: number
+    dailyLimit: number
     requestsToday: number
     averageResponseTime: number
     favoriteEndpoints: string[]
+    tier: string
+    lastActive: string | null
   }> {
     try {
       // Get user profile to get user_id
       const profile = await this.getProfileByClerkId(clerkUserId)
       if (!profile) {
         return {
-          totalRequests: 0,
+          totalRecommendations: 0,
+          matchRate: 0,
+          connectedDomains: 0,
+          dailyLimit: 50,
           requestsToday: 0,
           averageResponseTime: 0,
-          favoriteEndpoints: []
+          favoriteEndpoints: [],
+          tier: 'free',
+          lastActive: null
         }
       }
 
       const today = new Date().toISOString().split('T')[0]
 
-      // Get total requests
-      const { data: totalData } = await supabaseAdmin
+      // Get all requests data
+      const { data: allRequestsData } = await supabaseAdmin
         .from('api_usage')
-        .select('request_count')
+        .select('request_count, endpoint, response_time_ms, error_count')
         .eq('user_id', profile.id)
 
-      const totalRequests = totalData?.reduce((sum, row) => sum + row.request_count, 0) || 0
+      const totalRequests = allRequestsData?.reduce((sum, row) => sum + row.request_count, 0) || 0
+      const totalErrors = allRequestsData?.reduce((sum, row) => sum + (row.error_count || 0), 0) || 0
 
       // Get today's requests
       const { data: todayData } = await supabaseAdmin
@@ -275,19 +314,50 @@ export class UserProfileService {
 
       const favoriteEndpoints = endpointData?.map(row => row.endpoint) || []
 
+      // Calculate match rate (success rate)
+      const successfulRequests = totalRequests - totalErrors
+      const matchRate = totalRequests > 0 
+        ? Math.round((successfulRequests / totalRequests) * 100)
+        : 0
+
+      // Count unique recommendation endpoints as connected domains
+      const recommendationEndpoints = allRequestsData?.filter(
+        row => row.endpoint && row.endpoint.includes('/recommendations')
+      ) || []
+      const uniqueEndpoints = new Set(recommendationEndpoints.map(row => row.endpoint))
+      const connectedDomains = Math.max(1, uniqueEndpoints.size)
+
+      // Get tier-based daily limit
+      const tierLimits = {
+        free: 50,
+        premium: 500,
+        enterprise: 5000
+      }
+      const dailyLimit = tierLimits[profile.tier as keyof typeof tierLimits] || 50
+
       return {
-        totalRequests,
+        totalRecommendations: totalRequests,
+        matchRate: Math.min(matchRate, 100), // Cap at 100%
+        connectedDomains,
+        dailyLimit,
         requestsToday,
         averageResponseTime: Math.round(averageResponseTime),
-        favoriteEndpoints
+        favoriteEndpoints,
+        tier: profile.tier,
+        lastActive: profile.updated_at || profile.created_at
       }
     } catch (error) {
       console.error('Error getting user stats:', error)
       return {
-        totalRequests: 0,
+        totalRecommendations: 0,
+        matchRate: 0,
+        connectedDomains: 0,
+        dailyLimit: 50,
         requestsToday: 0,
         averageResponseTime: 0,
-        favoriteEndpoints: []
+        favoriteEndpoints: [],
+        tier: 'free',
+        lastActive: null
       }
     }
   }

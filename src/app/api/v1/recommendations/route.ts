@@ -6,6 +6,7 @@ import { createCachedQlooService } from '@/services/cached-qloo.service'
 import { GeminiService } from '@/services/gemini.service'
 import { UsageTrackingService } from '@/services/usage-tracking.service'
 import { UserProfileService } from '@/services/user-profile.service'
+import { RateLimiterService } from '@/services/rate-limiter.service'
 import { RecommendationRequest, RecommendationResponse, ErrorResponse, EntityType } from '@/types'
 import { ApiErrorMiddleware, ErrorResponseUtils } from '@/lib/error-middleware'
 import { ErrorUtils } from '@/lib/error-handler'
@@ -127,13 +128,7 @@ async function handleRecommendationsPost(request: NextRequest): Promise<NextResp
     throw ErrorUtils.authenticationRequired()
   }
 
-  // Get user profile for tier checking
-  const userProfile = await UserProfileService.getProfileByClerkId(userId)
-  if (!userProfile) {
-    throw ErrorUtils.userNotFound()
-  }
-
-  // Parse and validate request body
+  // Parse and validate request body first (lightweight operation)
   let body: unknown
   try {
     body = await request.json()
@@ -159,6 +154,35 @@ async function handleRecommendationsPost(request: NextRequest): Promise<NextResp
   }
 
   const recommendationRequest: RecommendationRequest = validationResult.data
+
+  // Check rate limits before any expensive operations
+  const rateLimitResult = await RateLimiterService.checkRateLimit(userId, 'recommendations')
+  if (!rateLimitResult.allowed) {
+    // Instead of returning an error, provide graceful degradation
+    console.log(`[API] User ${userId} hit rate limit for tier ${rateLimitResult.tier}, providing cached/fallback recommendations`)
+    
+    const rateLimitedResponse = await GracefulDegradationService.getRateLimitedRecommendations(
+      recommendationRequest,
+      userId,
+      rateLimitResult.tier
+    )
+    
+    return NextResponse.json(rateLimitedResponse, { 
+      status: 200, // Return 200 instead of 429 since we're providing value
+      headers: {
+        'X-RateLimit-Limit': rateLimitResult.limit.toString(),
+        'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+        'X-RateLimit-Reset': rateLimitResult.resetTime.toString(),
+        'X-Rate-Limited': 'true'
+      }
+    })
+  }
+
+  // Get user profile for tier checking
+  const userProfile = await UserProfileService.getProfileByClerkId(userId)
+  if (!userProfile) {
+    throw ErrorUtils.userNotFound()
+  }
 
   // Check usage limits based on user tier
   const hasUsageRemaining = await UserProfileService.checkUsageLimit(userId)

@@ -3,13 +3,22 @@ import { UserProfileService } from './user-profile.service'
 import { ApiUsageService } from '@/lib/database'
 import { UserProfile } from '@/types/database'
 
-// Rate limiting configuration by tier
-export const RATE_LIMITS = {
+// Rate limiting configuration by tier with environment-specific adjustments
+const getEnvironmentMultiplier = (): number => {
+  // Reduce limits in production to prevent abuse
+  if (process.env.NODE_ENV === 'production') {
+    return parseFloat(process.env.RATE_LIMIT_MULTIPLIER || '0.5') // 50% of normal limits
+  }
+  // Full limits in development/staging
+  return parseFloat(process.env.RATE_LIMIT_MULTIPLIER || '1.0')
+}
+
+const baseRateLimits = {
   free: {
     requestsPerMinute: 10,
     requestsPerHour: 100,
     requestsPerDay: 500,
-    burstLimit: 15, // Allow short bursts
+    burstLimit: 15,
   },
   premium: {
     requestsPerMinute: 50,
@@ -22,6 +31,29 @@ export const RATE_LIMITS = {
     requestsPerHour: 10000,
     requestsPerDay: 100000,
     burstLimit: 300,
+  },
+} as const
+
+// Apply environment multiplier to rate limits
+const multiplier = getEnvironmentMultiplier()
+export const RATE_LIMITS = {
+  free: {
+    requestsPerMinute: Math.floor(baseRateLimits.free.requestsPerMinute * multiplier),
+    requestsPerHour: Math.floor(baseRateLimits.free.requestsPerHour * multiplier),
+    requestsPerDay: Math.floor(baseRateLimits.free.requestsPerDay * multiplier),
+    burstLimit: Math.floor(baseRateLimits.free.burstLimit * multiplier),
+  },
+  premium: {
+    requestsPerMinute: Math.floor(baseRateLimits.premium.requestsPerMinute * multiplier),
+    requestsPerHour: Math.floor(baseRateLimits.premium.requestsPerHour * multiplier),
+    requestsPerDay: Math.floor(baseRateLimits.premium.requestsPerDay * multiplier),
+    burstLimit: Math.floor(baseRateLimits.premium.burstLimit * multiplier),
+  },
+  enterprise: {
+    requestsPerMinute: Math.floor(baseRateLimits.enterprise.requestsPerMinute * multiplier),
+    requestsPerHour: Math.floor(baseRateLimits.enterprise.requestsPerHour * multiplier),
+    requestsPerDay: Math.floor(baseRateLimits.enterprise.requestsPerDay * multiplier),
+    burstLimit: Math.floor(baseRateLimits.enterprise.burstLimit * multiplier),
   },
 } as const
 
